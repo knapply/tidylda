@@ -16,3 +16,5 @@
 ^appveyor\.yml$
 ^LICENSE\.md$
 ^README\.Rmd$
+
+_scratch.R

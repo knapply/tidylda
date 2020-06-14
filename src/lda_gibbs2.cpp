@@ -1,6 +1,8 @@
 // Functions to make a collapsed gibbs sampler for LDA
 
 // [[Rcpp::depends(RcppArmadillo)]]
+// [[Rcpp::plugins(cpp11)]]
+// [[Rcpp::depends(RcppThread)]]
 #include "RcppThread.h"
 #include <RcppArmadilloExtensions/sample.h>
 #include <R.h>
@@ -13,18 +15,50 @@ using namespace Rcpp;
 ////////////////////////////////////////////////////////////////////////////////
 // Functions down here are called inside of calc_lda_c()
 
+// cbind matrices that are elements of a list
+IntegerMatrix cbind_list(List& x, int& rows) {
+  // list of integer matrices with any number of columns and same number of rows
+  
+  // get number of columns
+  int cols = 0;
+  
+  for (int j = 0; j < x.length(); j++) {
+    IntegerMatrix mat = x[j];
+    
+    cols += mat.ncol();
+  }
+  
+  // initialize output matrix
+  IntegerMatrix out(rows, cols);
+  
+  // nested for loop to populate
+  int col_start = 0;
+  
+  for (int j = 0; j < x.length(); j++) {
+    IntegerMatrix mat = x[j];
+    
+    for (int k = 0; k < mat.cols(); k++) {
+      for (int l = 0; l < rows; l ++) {
+        out(l, col_start + k) = mat(l, k);
+      }
+    }
+    col_start += mat.cols();
+  }
+  
+  return out;
+  
+}
+
 // sample a new topic
 void sample_topics(
     IntegerVector& doc,
     IntegerVector& zd,
     IntegerVector& z,
-    int& n,
     int& d,
-    IntegerVector& Ck,
+    NumericVector& Ck,
     IntegerMatrix& Cd, 
-    IntegerMatrix& Cv,
+    NumericMatrix& Cv,
     IntegerVector& topic_index,
-    // NumericVector& qz,
     bool& freeze_topics,
     NumericMatrix& Phi,
     NumericVector& alpha,
@@ -34,7 +68,7 @@ void sample_topics(
     double& phi_kv
 ) {
   // for each token instance in the document
-  for (n = 0; n < doc.length(); n++) {
+  for (int n = 0; n < doc.length(); n++) {
     
     // discount counts from previous run ***
     Cd(zd[n], d) -= 1; 
@@ -96,14 +130,11 @@ void fcalc_likelihood(
     int& Nk,
     int& Nd,
     int& Nv,
-    int& k,
-    int& d,
-    int& v,
     int& t,
     double& sum_beta,
-    IntegerVector& Ck,
+    NumericVector& Ck,
     IntegerMatrix& Cd,
-    IntegerMatrix& Cv,
+    NumericMatrix& Cv,
     NumericVector& alpha,
     NumericVector& beta,
     double& lgalpha,
@@ -118,15 +149,15 @@ void fcalc_likelihood(
   lg_beta_count2 = 0.0;
   lg_alpha_count = 0.0;
   
-  for (k = 0; k < Nk; k++) {
+  for (int k = 0; k < Nk; k++) {
     
     lg_beta_count1 += lgamma(sum_beta + Ck[k]);
     
-    for (d = 0; d < Nd; d++) {
+    for (int d = 0; d < Nd; d++) {
       lg_alpha_count += lgamma(alpha[k] + Cd(k, d));
     }
     
-    for (v = 0; v < Nv; v++) {
+    for (int v = 0; v < Nv; v++) {
       lg_beta_count2 += lgamma(beta(k,v) + Cv(k, v));
     }
     
@@ -145,16 +176,15 @@ void fcalc_likelihood(
 // procedure likely to change similar to what Mimno does in Mallet
 void foptimize_alpha(
     NumericVector& alpha, 
-    IntegerVector& Ck,
+    NumericVector& Ck,
     int& sumtokens,
     double& sum_alpha,
-    int& Nk,
-    int& k
+    int& Nk
 ) {
   
   NumericVector new_alpha(Nk);
   
-  for (k = 0; k < Nk; k++) {
+  for (int k = 0; k < Nk; k++) {
     
     new_alpha[k] += (double)Ck[k] / (double)sumtokens * (double)sum_alpha;
     
@@ -171,23 +201,20 @@ void agg_counts_post_burnin(
     int& Nk,
     int& Nd,
     int& Nv,
-    int& k,
-    int& d,
-    int& v,
     bool& freeze_topics,
     IntegerMatrix& Cd,
     IntegerMatrix& Cd_sum,
-    IntegerMatrix& Cv,
-    IntegerMatrix& Cv_sum
+    NumericMatrix& Cv,
+    NumericMatrix& Cv_sum
 ) {
-  for (k = 0; k < Nk; k++) {
-    for (d = 0; d < Nd; d++) {
+  for (int k = 0; k < Nk; k++) {
+    for (int d = 0; d < Nd; d++) {
       
       Cd_sum(k, d) += Cd(k, d);
       
     }
     if (! freeze_topics) {
-      for (v = 0; v < Nv; v++) {
+      for (int v = 0; v < Nv; v++) {
         
         Cv_sum(k, v) += Cv(k, v);
         
@@ -220,36 +247,33 @@ void agg_counts_post_burnin(
 //' @param optimize_alpha bool do you want to optimize alpha each iteration?
 // [[Rcpp::export]]
 List fit_lda_c(
-    List &docs,
-    int &Nk,
-    NumericMatrix &beta,
+    const List &docs_list,
+    const int &Nk,
+    const int &Nd,
+    const int &Nv,
+    const NumericMatrix &beta,
     NumericVector alpha,
-    IntegerMatrix Cd,
-    IntegerMatrix Cv,
-    IntegerVector Ck,
-    List Zd,
-    NumericMatrix &Phi,
-    int &iterations,
-    int &burnin,
-    bool &freeze_topics,
-    bool &calc_likelihood,
-    bool &optimize_alpha
+    List Cd_list,
+    List Cv_list,
+    List Ck_list,
+    List Zd_list,
+    const NumericMatrix &Phi,
+    const int &iterations,
+    const int &burnin,
+    const bool &freeze_topics,
+    const bool &calc_likelihood,
+    const bool &optimize_alpha
 ) {
-  
-  // ***********************************************************************
-  // TODO Check quality of inputs to minimize risk of crashing the program
-  // ***********************************************************************
-  
-  
-  
   
   // ***********************************************************************
   // Variables and other set up
   // ***********************************************************************
   
-  int Nv = Cv.cols();
+  NumericMatrix Cv = Cv_list[1]; // global Cv count matrix
   
-  int Nd = Cd.cols();
+  NumericVector Ck = Ck_list[1]; // global Ck count vector
+  
+  IntegerMatrix Cd(Nk, Nd);
   
   NumericVector k_alpha = alpha * Nk;
   
@@ -263,14 +287,10 @@ List fit_lda_c(
   
   double phi_kv(0.0);
   
-  int t, d, n, k, v; // indices for loops
-  
   IntegerVector topic_index = seq_len(Nk) - 1;
 
-  IntegerVector z(1); // for sampling topics
-  
   // related to burnin and averaging
-  IntegerMatrix Cv_sum(Nk, Nv);
+  NumericMatrix Cv_sum(Nk, Nv);
   
   NumericMatrix Cv_mean(Nk, Nv);
   
@@ -295,23 +315,30 @@ List fit_lda_c(
   
   if (calc_likelihood && ! freeze_topics) { // if calc_likelihood, actually populate this stuff
     
-    for (n = 0; n < Nv; n++) {
+    for (int n = 0; n < Nv; n++) {
       lgbeta += lgamma(beta[n]);
     }
     
     lgbeta = (lgbeta - lgamma(sum_beta)) * Nk; // rcpp sugar here
     
-    for (k = 0; k < Nk; k++) {
+    for (int k = 0; k < Nk; k++) {
       lgalpha += lgamma(alpha[k]);
     }
     
     lgalpha = (lgalpha - lgamma(sum_alpha)) * Nd;
     
-    for (d = 0; d < Nd; d++) {
-      IntegerVector doc = docs[d];
+    for (int j = 0; j < docs_list.length(); j++) {
       
-      lg_alpha_len += lgamma(sum_alpha + doc.length());
+      List docs = docs_list[j];
+      
+      for (int d = 0; d < Nd; d++) {
+        IntegerVector doc = docs[d];
+        
+        lg_alpha_len += lgamma(sum_alpha + doc.length());
+      }
     }
+    
+
     
     lg_alpha_len *= -1;
   }
@@ -322,37 +349,178 @@ List fit_lda_c(
   // BEGIN ITERATIONS
   // ***********************************************************************
   
-  for (t = 0; t < iterations; t++) {
+  for (int t = 0; t < iterations; t++) {
     
-    // loop over documents
-    for (d = 0; d < Nd; d++) { //start loop over documents
+    //////////////////////////////
+    // parallel loop over batches
+    //////////////////////////////
+    
+    // int num_threads = Cd_list.length(); // number of parallel threads
+    // 
+    // RcppThread::parallelFor(
+    //   0, docs_list.length() - 1,
+    //   [
+    // &docs_list,
+    // &Zd_list,
+    // &Cd_list,
+    // &Ck_list,
+    // &Cv_list,
+    // &topic_index, // collision risk?
+    // &freeze_topics,
+    // &Phi,
+    // &alpha,
+    // &beta,
+    // &sum_alpha,
+    // &sum_beta,
+    // &phi_kv
+    //   ](int j){
+    // 
+    //     List docs = docs_list[j];
+    // 
+    //     IntegerMatrix Cd = Cd_list[j];
+    // 
+    //     NumericMatrix Cv = Cv_list[j];
+    // 
+    //     NumericVector Ck = Ck_list[j];
+    // 
+    //     List Zd = Zd_list[j];
+    // 
+    //     IntegerVector z(1); // for sampling topics
+    // 
+    //       // loop over documents
+    //       for (int d = 0; d < Zd.length(); d++) { //start loop over documents
+    // 
+    //         RcppThread::checkUserInterrupt();
+    // 
+    //         IntegerVector doc = docs[d];
+    // 
+    //         IntegerVector zd = Zd[d];
+    // 
+    //         sample_topics(
+    //           doc,
+    //           zd,
+    //           z,
+    //           d,
+    //           Ck,
+    //           Cd,
+    //           Cv,
+    //           topic_index,
+    //           freeze_topics,
+    //           Phi,
+    //           alpha,
+    //           beta,
+    //           sum_alpha,
+    //           sum_beta,
+    //           phi_kv
+    //         );
+    // 
+    //       } // end loop over docs
+    // 
+    //   },
+    //   num_threads
+    // ); // end loop over batches
+    
+    
+    // for troubleshooting purposes
+
+    Rcout << "iteration " << t << "\n";
+
+    for (int j = 0; j < Zd_list.length(); j++) {
+
+      Rcout << "looping over batches\n";
+
+      List docs = docs_list[j];
+
+      IntegerMatrix Cd_batch = Cd_list[j];
+
+      NumericMatrix Cv_batch = Cv_list[j];
+
+      NumericVector Ck_batch = Ck_list[j];
+
+      List Zd = Zd_list[j];
+
+      IntegerVector z(1); // for sampling topics
+
+      // loop over documents
+      for (int d = 0; d < Zd.length(); d++) { //start loop over documents
+
+        // Rcout << "doc " << d << "\n";
+
+        R_CheckUserInterrupt();
+
+        IntegerVector doc = docs[d];
+
+        IntegerVector zd = Zd[d];
+
+        sample_topics(
+          doc,
+          zd,
+          z,
+          d,
+          Ck_batch,
+          Cd_batch,
+          Cv_batch,
+          topic_index,
+          freeze_topics,
+          Phi,
+          alpha,
+          beta,
+          sum_alpha,
+          sum_beta,
+          phi_kv
+        );
+
+      } // end loop over docs
+
+      // Rcout << "end document loops\n";
+    }
+    
+    //////////////////////////////
+    // Reconcile Cv etc. across batches
+    //////////////////////////////
+    
+    Rcout << "Reconcile Cv and Ck\n";
+    
+    Cv = Cv * 0.0;
+    
+    Ck = Ck * 0.0;
+    
+    for (int j = 0; j < Cv_list.length(); j++) {
       
-      R_CheckUserInterrupt();
+      // Global Cv is average across batches
+      NumericMatrix tmp_m = Cv_list[j];
       
-      IntegerVector doc = docs[d];
+      for (int cols = 0; cols < tmp_m.ncol(); cols++) {
+        for (int rows = 0; rows < tmp_m.nrow(); rows++){
+          Cv(rows, cols) = (Cv(rows, cols) + tmp_m(rows, cols));
+        }
+      }
       
-      IntegerVector zd = Zd[d];
+      // Cv = Cv / (double)Cv_list.length();
       
-      sample_topics(
-        doc,
-        zd,
-        z,
-        n,
-        d,
-        Ck,
-        Cd, 
-        Cv,
-        topic_index,
-        freeze_topics,
-        Phi,
-        alpha,
-        beta,
-        sum_alpha,
-        sum_beta,
-        phi_kv
-      );
+      // Global Ck is average across batches
+      NumericVector tmp_v = Ck_list[j];
       
-    } // end loop over docs    
+      for (int k = 0; k < tmp_v.length(); k++) {
+        Ck[k] = (Ck[k] + tmp_v[k]);
+      }
+      
+      // Ck = Ck / (double)Cv_list.length();
+      
+    }
+
+
+    Rcout << "sum(Ck) is " << sum(Ck) << "\n";
+    
+    // Global Cd is cbind() of batch Cd's
+    Rcout << "combind global Cd\n";
+    
+    Cd = cbind_list(Cd_list, Nk);
+
+    //////////////////////////////
+    // Do other calculations
+    //////////////////////////////
+    
     // calc likelihood ***
     if (calc_likelihood && ! freeze_topics) {
       
@@ -363,9 +531,6 @@ List fit_lda_c(
         Nk,
         Nd,
         Nv,
-        k,
-        d,
-        v,
         t,
         sum_beta,
         Ck,
@@ -388,8 +553,7 @@ List fit_lda_c(
         Ck,
         sumtokens,
         sum_alpha,
-        Nk,
-        k
+        Nk
       );  
       
     }
@@ -401,15 +565,24 @@ List fit_lda_c(
         Nk,
         Nd,
         Nv,
-        k,
-        d,
-        v,
         freeze_topics,
         Cd,
         Cd_sum,
         Cv,
         Cv_sum
       );
+      
+    }
+    
+    
+    // copy global Cv and Ck back to batches
+    Rcout << "copy global Cv and Ck back to batches\n";
+    
+    for (int j = 0; j < Cv_list.length(); j++) {
+      
+      Cv_list[j] = clone(Cv);
+      
+      Ck_list[j] = clone(Ck);
       
     }
     
@@ -426,13 +599,13 @@ List fit_lda_c(
     double diff = iterations - burnin;
     
     // average over chain after burnin 
-    for (k = 0; k < Nk; k++) {
+    for (int k = 0; k < Nk; k++) {
       
-      for (d = 0; d < Nd; d++) {
+      for (int d = 0; d < Nd; d++) {
         Cd_mean(k, d) = ((double)Cd_sum(k, d) / diff);
       }
       
-      for (v = 0; v < Nv; v++) {
+      for (int v = 0; v < Nv; v++) {
         Cv_mean(k, v) = ((double)Cv_sum(k, v) / diff);
       }
     }

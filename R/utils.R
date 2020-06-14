@@ -792,3 +792,57 @@ calc_lda_r2 <- function(dtm, theta, phi, batch_size, ...) {
 }
 
 
+#' Bridge function to format counts for Gibbs (or parallel Gibbs) sampling
+#' @keywords internal
+#' @description
+#'   Divide document-related objects into batches to enable parallel Gibbs
+#'   sampling for LDA. This is a bridge between \code{\link[tidylda]{initialize_topic_counts}}
+#'   and \code{\link[tidylda]{fit_lda_c}}.
+#' @param counts list output of \code{\link[tidylda]{initialize_topic_counts}}
+#' @param lda_threads integer number of threads to run when Gibbs sampling
+#' @param num_docs integer number of documents
+#' @... other parameters to be passed to \code{\link[furrr]{future_map}}
+#' @return
+#'   Returns a list with the following slots
+#'   
+#'    \code{Cd_list}: each element is a batch of documents, splitting Cd by columns.
+#'    
+#'    \code{Cv_list}: each element is a copy of Cv.
+#'    
+#'    \code{docs_list}: each element is a batch of documents, indexing tokens.
+#'    
+#'    \code{Zd_list}: each element is a batch of documents, indexing topics.
+count_bridge <- function(
+  lda_threads, 
+  num_docs
+) {
+  gibbs_batch_size <- round(num_docs / lda_threads)
+  
+  indices <- vector(mode = "list", length = lda_threads)
+  
+  if (gibbs_batch_size == num_docs) { # if we go sequential (one thread)
+    indices <- list(seq_len(num_docs))
+    
+  } else { # if we go parallel (2 or more threads)
+    
+    # get docuemnt indices for each batch
+    indices <- vector(mode = "list", length = lda_threads)
+    
+    indices[[1]] <- 1:gibbs_batch_size
+    
+    if (lda_threads > 2) {
+      for (j in 2:(length(indices) - 1)) {
+        indices[[j]] <- 
+          (max(indices[[j - 1]]) + 1):(max(indices[[j - 1]]) + gibbs_batch_size)
+      }
+    }
+    
+    indices[[length(indices)]] <- 
+      (max(indices[[length(indices) - 1]]) + 1):num_docs
+    
+  }
+  
+  # return output
+  indices
+  
+} 

@@ -79,8 +79,8 @@
 #'   If set to \code{1}, the default, this is the exact Gibbs algorithm with
 #'   all of its theoretical guarantees intact. If parallel, the algorithm in 
 #'   <doi:10.1145/1577069.1755845> is used as an approximate Gibbs sampler.
-#'   If \code{batch_size} greater than or equal to the number of documents, the
-#'   sampler will be sequential Gibbs regardless of the value of \code{lda_threads}.
+#'   Documents are divided into \code{lda_threads} batches and processed in
+#'   parallel.
 #'
 #' @examples
 #' # load some data
@@ -118,6 +118,7 @@ tidylda <- function(
   calc_likelihood = FALSE,
   calc_r2 = FALSE, 
   batch_size = 3000,
+  lda_threads = 1,
   return_data = FALSE, 
   ...
 ) {
@@ -140,6 +141,7 @@ tidylda <- function(
     calc_likelihood = calc_likelihood,
     calc_r2 = calc_r2,
     batch_size = batch_size,
+    lda_threads = lda_threads,
     return_data = return_data,
     mc,
     ...
@@ -164,6 +166,7 @@ tidylda_bridge <- function(
   calc_likelihood, 
   calc_r2,
   batch_size,
+  lda_threads,
   return_data, 
   mc,
   ...
@@ -232,25 +235,46 @@ tidylda_bridge <- function(
   )
 
   # divide into batches to enable parallel execution of the Gibbs sampler
+  batch_indices <- count_bridge(
+    lda_threads = lda_threads, 
+    num_docs = nrow(dtm)
+  )
   
-
   ### run C++ gibbs sampler ----
+  
   lda <- fit_lda_c(
+    batches = batch_indices,
     docs = counts$docs,
-    Nk = k,
-    alpha = alpha$alpha,
-    beta = beta$beta,
+    Zd = counts$Zd,
     Cd = counts$Cd,
     Cv = counts$Cv,
     Ck = counts$Ck,
-    Zd = counts$Zd,
-    Phi = counts$Cv, # this is actually ignored as freeze_topics = FALSE for initial fitting
+    alpha = alpha$alpha,
+    beta = beta$beta,
     iterations = iterations,
     burnin = burnin,
-    freeze_topics = FALSE, # this stays FALSE for initial fitting
+    freeze_topics = freeze_topics,
     calc_likelihood = calc_likelihood,
-    optimize_alpha = optimize_alpha
+    optimize_alpha = optimize_alpha,
+    Phi = counts$Cd # ignored here because freeze_topics = F
   )
+  
+  # lda <- fit_lda_c(
+  #   docs = counts$docs,
+  #   Nk = k,
+  #   alpha = alpha$alpha,
+  #   beta = beta$beta,
+  #   Cd = counts$Cd,
+  #   Cv = counts$Cv,
+  #   Ck = counts$Ck,
+  #   Zd = counts$Zd,
+  #   Phi = counts$Cv, # this is actually ignored as freeze_topics = FALSE for initial fitting
+  #   iterations = iterations,
+  #   burnin = burnin,
+  #   freeze_topics = FALSE, # this stays FALSE for initial fitting
+  #   calc_likelihood = calc_likelihood,
+  #   optimize_alpha = optimize_alpha
+  # )
 
   ### format the output ----
 
