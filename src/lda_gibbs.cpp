@@ -386,7 +386,7 @@ List fit_lda_c(
       
       // loop over documents in that batch
       for (int d = batch_idx[0]; d < batch_idx[batch_idx.length()]; d++) {
-        Rcout << "document " << d << "\n";
+        // Rcout << "document " << d << "\n";
         
         R_CheckUserInterrupt();
         
@@ -554,7 +554,7 @@ counts <- tidylda:::initialize_topic_counts(
 
 # divide into batches to enable parallel execution of the Gibbs sampler
 batch_indices <- count_bridge(
-  lda_threads = 3, 
+  lda_threads = 3,
   num_docs = nrow(dtm)
 )
 
