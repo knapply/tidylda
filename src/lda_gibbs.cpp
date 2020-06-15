@@ -272,6 +272,9 @@ List fit_lda_c(
     bool& optimize_alpha //, NumericMatrix& Phi
 ) {
   
+  Rcout << "Num docs " << Cd.ncol() << "\n";
+  
+  
   // ***********************************************************************
   // Variables and other set up
   // ***********************************************************************
