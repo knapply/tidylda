@@ -535,7 +535,7 @@ List fit_lda_c(
 }
 
 /*** R
-source("R/utils.R")
+source(paste0(here::here(), "/R/utils.R"))
 
 dtm <- textmineR::nih_sample_dtm
 k <- 10
